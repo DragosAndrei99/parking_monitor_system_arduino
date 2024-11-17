@@ -27,7 +27,7 @@ Servo barrier;
 int spotStatus[3] = {0, 0, 0};
 RTCTime spotStatusTimeStart[3] = {0, 0, 0};
 int barrierPosition = 0; 
-
+bool automateBarrier = true;
 // ---------------------------------------------------------------------------
 // ---------------------------SETUP-------------------------------------------
 
@@ -178,19 +178,21 @@ void operateBarrier() {
 // ---------------------------------------------------------------------------
 // ----------------------SERVER-----------------------------------------------
 
-void serveUpTheParkState(String parkState) {
+void serveUpTheParkState(String parkingSpotsState, String barrierState) {
   
   WiFiClient client = server.available();
     if (client) {                             
     Serial.println("new client");           
-    String currentLine = "";                
+    String currentLine = "";
+    String requestPath = "";      
     while (client.connected()) {            
       if (client.available()) {             
         char c = client.read();            
         Serial.write(c);                    
         if (c == '\n') {                   
 
-        
+          Serial.println();
+
           if (currentLine.length() == 0) {
            
             client.println("HTTP/1.1 200 OK");
@@ -199,13 +201,40 @@ void serveUpTheParkState(String parkState) {
 
             client.println();
 
-            client.print(parkState);
+            if (requestPath.startsWith("GET /barrier")) {
+              client.print(barrierState);
+            } else if (requestPath.startsWith("PUT /close-barrier")) {
+              if(barrierPosition == 90) {
+                automateBarrier = false;
+                moveBarrierSmooth(0);
+              }
+            } else if (requestPath.startsWith("PUT /open-barrier")) {
+              if(barrierPosition == 0) {
+                automateBarrier = false;
+                moveBarrierSmooth(90);
+              }
+            } else if (requestPath.startsWith("PUT /auto-barrier")) {
+              automateBarrier = true;
+            } else if (requestPath.startsWith("GET /park")) {
+              client.print(parkingSpotsState);
+            } else {
+              client.println("{\"error\":\"Not Found\"}");
+            }
 
             client.println();
             break;
-          } else {    
+          } else {
+            if(currentLine.startsWith("GET") || currentLine.startsWith("PUT")) {
+              int pathStart = currentLine.indexOf(' ') + 1;
+              int pathEnd = currentLine.indexOf(' ', pathStart);
+              String httpMethod = currentLine.startsWith("PUT ") ? "PUT " : "GET ";
+              requestPath = httpMethod + currentLine.substring(pathStart, pathEnd);
+              Serial.println("Requested Path: " + requestPath);
+            }
             currentLine = "";
           }
+
+        
         } else if (c != '\r') {
           currentLine += c;
         }
@@ -217,12 +246,18 @@ void serveUpTheParkState(String parkState) {
   }
 }
 
-String composeParkStateJsonString() {
+String composeParkingSpotsStateJsonString() {
   return String("{") + 
-    "\"" + String("0: ") + "\"" + "[" + "\"" + String(spotStatus[0]) + "\"" + "," + "\"" + String(spotStatusTimeStart[0]) + "\"" + "]" + String(",") + 
-    "\"" + String("1: ") + "\"" + "[" + "\"" + String(spotStatus[1]) + "\"" + "," + "\"" + String(spotStatusTimeStart[1]) + "\"" + "]" + String(",") + 
-    "\"" + String("2: ") + "\"" + "[" + "\"" + String(spotStatus[2]) + "\"" + "," + "\"" + String(spotStatusTimeStart[2]) + "\"" + "]" +   
+    "\"" + String("0") + "\":" + " [" + "\"" + String(spotStatus[0]) + "\"" + "," + "\"" + String(spotStatusTimeStart[0]) + "\"" + "]" + String(",") + 
+    "\"" + String("1") + "\":" + " [" + "\"" + String(spotStatus[1]) + "\"" + "," + "\"" + String(spotStatusTimeStart[1]) + "\"" + "]" + String(",") + 
+    "\"" + String("2") + "\":" + " [" + "\"" + String(spotStatus[2]) + "\"" + "," + "\"" + String(spotStatusTimeStart[2]) + "\"" + "]" +   
     String("}");
+}
+
+String composeBarrierStateJsonString() {
+    return String("{") + 
+     "\"" + "barrier" + "\": " + "\"" + (barrierPosition == 90 ? String(0) : String(1)) + "\"" +
+      String("}");
 }
 
 // ---------------------------------------------------------------------------
@@ -240,13 +275,13 @@ void loop() {
   int currentSpotStatus3 = (measureDistance(TRIG3, ECHO3) < 10) ? 1 : 0;
   updateSpotStatus(spotStatus[2], spotStatusTimeStart[2], currentSpotStatus3, currentTime);
 
-  // barrier operation
-  operateBarrier();
+  //automatic barrier operation
+  if(automateBarrier) operateBarrier();
 
   // server
-  String parkState = composeParkStateJsonString();
-  Serial.println(parkState);
-  serveUpTheParkState(parkState);
+  String parkingSpotsState = composeParkingSpotsStateJsonString();
+  String barrierState = composeBarrierStateJsonString();
+  serveUpTheParkState(parkingSpotsState, barrierState);
 
   // ----------------------------------------------
   delay(1000); 

@@ -248,9 +248,9 @@ void serveUpTheParkState(String parkingSpotsState, String barrierState) {
 
 String composeParkingSpotsStateJsonString() {
   return String("{") + 
-    "\"" + String("0") + "\":" + " [" + "\"" + String(spotStatus[0]) + "\"" + "," + "\"" + String(spotStatusTimeStart[0]) + "\"" + "]" + String(",") + 
-    "\"" + String("1") + "\":" + " [" + "\"" + String(spotStatus[1]) + "\"" + "," + "\"" + String(spotStatusTimeStart[1]) + "\"" + "]" + String(",") + 
-    "\"" + String("2") + "\":" + " [" + "\"" + String(spotStatus[2]) + "\"" + "," + "\"" + String(spotStatusTimeStart[2]) + "\"" + "]" +   
+    "\"" + "parkingSpotsState" + "\": " + "[" + "[" + "\"" + String(spotStatus[0]) + "\"" + ", " + "\"" + String(spotStatusTimeStart[0]) + "\"" + "]" + String(",") + 
+    + "[" + "\"" + String(spotStatus[1]) + "\"" + ", " + "\"" + String(spotStatusTimeStart[1]) + "\"" + "]" + String(",") + 
+    + "[" + "\"" + String(spotStatus[2]) + "\"" + ", " + "\"" + String(spotStatusTimeStart[2]) + "\"" + "]" + "]" +   
     String("}");
 }
 

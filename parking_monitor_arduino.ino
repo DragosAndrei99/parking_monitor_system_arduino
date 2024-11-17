@@ -1,6 +1,8 @@
 #include <Servo.h>
 #include "WiFiS3.h"
 #include <ArduinoJson.h>
+#include <NTPClient.h>
+#include "RTC.h"
 
 
 #define TRIG1 2
@@ -14,7 +16,8 @@
 
 WiFiServer server(80);
 int status = WL_IDLE_STATUS;
-
+WiFiUDP Udp;
+NTPClient timeClient(Udp);
 
 // replace these below based on wi-fi available
 const char* ssid = "DIGI-83Fy";
@@ -22,7 +25,12 @@ const char* pass = "h8bE87J4";
 
 Servo barrier;
 int spotStatus[3] = {0, 0, 0};
+RTCTime spotStatusTimeStart[3] = {0, 0, 0};
 int barrierPosition = 0; 
+
+// ---------------------------------------------------------------------------
+// ---------------------------SETUP-------------------------------------------
+
 
 void connectToWiFi() {
   Serial.print("Connecting to WiFi...");
@@ -46,6 +54,44 @@ void connectToWiFi() {
   printWifiStatus();             
 }
 
+void printWifiStatus() {
+  Serial.print("SSID: ");
+  Serial.println(WiFi.SSID());
+
+  IPAddress ip = WiFi.localIP();
+  Serial.print("IP Address: ");
+  Serial.println(ip);
+
+  long rssi = WiFi.RSSI();
+  Serial.print("signal strength (RSSI):");
+  Serial.print(rssi);
+  Serial.println(" dBm");
+  Serial.println(ip);
+}
+
+void connectToTimeServer() {
+  RTC.begin();
+  Serial.println("\nStarting connection to server...");
+  timeClient.begin();
+  timeClient.update();
+
+  auto timeZoneOffsetHours = 2;
+  auto unixTime = timeClient.getEpochTime() + (timeZoneOffsetHours * 3600);
+  Serial.print("Unix time = ");
+  Serial.println(unixTime);
+  RTCTime timeToSet = RTCTime(unixTime);
+  RTC.setTime(timeToSet);
+
+  RTCTime currentTime;
+  RTC.getTime(currentTime); 
+  Serial.println("The RTC was just set to: " + String(currentTime));
+
+  spotStatusTimeStart[0] = currentTime;
+  spotStatusTimeStart[1] = currentTime;
+  spotStatusTimeStart[2] = currentTime;
+
+}
+
 void setup() {
   Serial.begin(9600);
   while (!Serial);
@@ -63,9 +109,13 @@ void setup() {
   barrier.write(barrierPosition); 
 
   Serial.println("System Initialized");
-  server.begin();                           
-
+  server.begin();
+  connectToTimeServer();                           
 }
+
+
+// ---------------------------------------------------------------------------
+// -----------------------PARKING SENSOR--------------------------------------
 
 float measureDistance(int trigPin, int echoPin) {
   digitalWrite(trigPin, LOW);
@@ -76,6 +126,17 @@ float measureDistance(int trigPin, int echoPin) {
   float distance = pulseIn(echoPin, HIGH) * 0.034 / 2;
   return distance;
 }
+
+void updateSpotStatus(int &singleSpotStatus, RTCTime &singleSpotStatusTimeStart, int singleCurrentSpotStatus,RTCTime currentTime) {
+   if(singleCurrentSpotStatus != singleSpotStatus && String(singleSpotStatusTimeStart) != String(currentTime)) {
+    singleSpotStatus = singleCurrentSpotStatus;
+    singleSpotStatusTimeStart = currentTime;
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// -----------------------BARRIER---------------------------------------------
 
 void moveBarrierSmooth(int targetPosition) {
   if (barrierPosition < targetPosition) {
@@ -92,7 +153,9 @@ void moveBarrierSmooth(int targetPosition) {
   barrierPosition = targetPosition; 
 }
 
-int calculateBarrierTargetPosition(int freeSpots) {
+int calculateBarrierTargetPosition() {
+  int occupiedSpots = spotStatus[0] + spotStatus[1] + spotStatus[2];
+  int freeSpots = 3 - occupiedSpots;
   int targetPosition;
     if (freeSpots > 0) {
       targetPosition = 90; 
@@ -101,9 +164,19 @@ int calculateBarrierTargetPosition(int freeSpots) {
       targetPosition = 0; 
       // Serial.println("Barrier Closing: No free spots.");
     }
+
   return targetPosition;
 }
 
+void operateBarrier() {
+  int targetPosition = calculateBarrierTargetPosition();
+  if (barrierPosition != targetPosition) {
+    moveBarrierSmooth(targetPosition);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ----------------------SERVER-----------------------------------------------
 
 void serveUpTheParkState(String parkState) {
   
@@ -142,47 +215,39 @@ void serveUpTheParkState(String parkState) {
     client.stop();
     Serial.println("client disconnected");
   }
- 
 }
 
-void loop() {
-  spotStatus[0] = (measureDistance(TRIG1, ECHO1) < 10) ? 1 : 0;
-  spotStatus[1] = (measureDistance(TRIG2, ECHO2) < 10) ? 1 : 0;
-  spotStatus[2] = (measureDistance(TRIG3, ECHO3) < 10) ? 1 : 0;
-
-  int occupiedSpots = spotStatus[0] + spotStatus[1] + spotStatus[2];
-  int freeSpots = 3 - occupiedSpots;
-  
-  int targetPosition = calculateBarrierTargetPosition(freeSpots);
-  
-  if (barrierPosition != targetPosition) {
-    moveBarrierSmooth(targetPosition);
-  }
-
-  String parkState = String("{") + 
-    String("0: ") + String(spotStatus[0]) + String(",") + 
-    String("1: ") + String(spotStatus[1]) + String(",") + 
-    String("2: ") + String(spotStatus[2]) +   
+String composeParkStateJsonString() {
+  return String("{") + 
+    "\"" + String("0: ") + "\"" + "[" + "\"" + String(spotStatus[0]) + "\"" + "," + "\"" + String(spotStatusTimeStart[0]) + "\"" + "]" + String(",") + 
+    "\"" + String("1: ") + "\"" + "[" + "\"" + String(spotStatus[1]) + "\"" + "," + "\"" + String(spotStatusTimeStart[1]) + "\"" + "]" + String(",") + 
+    "\"" + String("2: ") + "\"" + "[" + "\"" + String(spotStatus[2]) + "\"" + "," + "\"" + String(spotStatusTimeStart[2]) + "\"" + "]" +   
     String("}");
+}
 
+// ---------------------------------------------------------------------------
+// -----------------------LOOP------------------------------------------------
+
+void loop() {
+  // spot status update
+  RTCTime currentTime;
+  RTC.getTime(currentTime); 
+
+  int currentSpotStatus1 = (measureDistance(TRIG1, ECHO1) < 10) ? 1 : 0;
+  updateSpotStatus(spotStatus[0], spotStatusTimeStart[0], currentSpotStatus1, currentTime);
+  int currentSpotStatus2 = (measureDistance(TRIG2, ECHO2) < 10) ? 1 : 0;
+  updateSpotStatus(spotStatus[1], spotStatusTimeStart[1], currentSpotStatus2, currentTime);
+  int currentSpotStatus3 = (measureDistance(TRIG3, ECHO3) < 10) ? 1 : 0;
+  updateSpotStatus(spotStatus[2], spotStatusTimeStart[2], currentSpotStatus3, currentTime);
+
+  // barrier operation
+  operateBarrier();
+
+  // server
+  String parkState = composeParkStateJsonString();
   Serial.println(parkState);
   serveUpTheParkState(parkState);
 
+  // ----------------------------------------------
   delay(1000); 
-}
-
-
-void printWifiStatus() {
-  Serial.print("SSID: ");
-  Serial.println(WiFi.SSID());
-
-  IPAddress ip = WiFi.localIP();
-  Serial.print("IP Address: ");
-  Serial.println(ip);
-
-  long rssi = WiFi.RSSI();
-  Serial.print("signal strength (RSSI):");
-  Serial.print(rssi);
-  Serial.println(" dBm");
-  Serial.println(ip);
 }
